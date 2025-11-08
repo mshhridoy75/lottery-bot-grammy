@@ -1,0 +1,20 @@
+{
+  "name": "competitii-bot-grammy",
+  "version": "1.0.0",
+  "description": "Competitii Telegram Lottery Bot (grammY) - English + Romanian (friendly)",
+  "type": "module",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "author": "Competitii",
+  "license": "MIT",
+  "dependencies": {
+    "@grammyjs/auto-retry": "^2.0.2",
+    "@grammyjs/i18n": "^1.1.2",
+    "@grammyjs/storage-file": "^2.5.1",
+    "dotenv": "^16.0.3",
+    "grammy": "^1.38.3",
+    "openai": "^6.8.1"
+  }
+}
