@@ -26,11 +26,63 @@ if (!BOT_TOKEN) {
 }
 
 // =============== DATABASE ===============
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ Connected to MongoDB"))
-  .catch((err) => console.error("❌ MongoDB connection error:", err));
+const MONGO_URI = process.env.MONGO_URI;
 
+if (!MONGO_URI) {
+  console.error("❌ MONGO_URI missing in .env file");
+  process.exit(1);
+}
+
+// Enhanced MongoDB connection with better error handling
+const mongooseOptions = {
+  serverSelectionTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 10,
+  minPoolSize: 5,
+  retryWrites: true,
+  w: 'majority',
+  retryReads: true,
+};
+
+let isDbConnected = false;
+
+async function connectDatabase() {
+  try {
+    await mongoose.connect(MONGO_URI, mongooseOptions);
+    isDbConnected = true;
+    console.log("✅ Connected to MongoDB");
+  } catch (error) {
+    console.error("❌ MongoDB connection failed:", error.message);
+    isDbConnected = false;
+  }
+}
+
+// Initialize database connection
+connectDatabase();
+
+// Database connection events
+mongoose.connection.on('connected', () => {
+  isDbConnected = true;
+  console.log('✅ MongoDB connected successfully');
+});
+
+mongoose.connection.on('error', (err) => {
+  isDbConnected = false;
+  console.error('❌ MongoDB connection error:', err.message);
+});
+
+mongoose.connection.on('disconnected', () => {
+  isDbConnected = false;
+  console.log('⚠️ MongoDB disconnected');
+});
+
+// Auto-reconnect
+mongoose.connection.on('disconnected', () => {
+  console.log('🔄 Attempting to reconnect to MongoDB...');
+  setTimeout(connectDatabase, 5000);
+});
+
+// Database schemas
 const drawSchema = new mongoose.Schema(
   {
     id: String,
@@ -60,6 +112,65 @@ const referralSchema = new mongoose.Schema(
 const Draw = mongoose.model("Draw", drawSchema);
 const Participant = mongoose.model("Participant", participantSchema);
 const Referral = mongoose.model("Referral", referralSchema);
+
+// =============== DATABASE HEALTH CHECK ===============
+async function checkDbHealth() {
+  if (!isDbConnected) {
+    await connectDatabase();
+  }
+  
+  try {
+    await mongoose.connection.db.admin().ping();
+    return true;
+  } catch (error) {
+    console.error('❌ Database health check failed:', error.message);
+    isDbConnected = false;
+    return false;
+  }
+}
+
+// =============== SAFE DATABASE OPERATIONS ===============
+async function safeDbOperation(operation, fallbackValue = null, operationName = "DB Operation") {
+  if (!await checkDbHealth()) {
+    console.warn(`⚠️ Database not available for: ${operationName}`);
+    return fallbackValue;
+  }
+
+  try {
+    const result = await operation();
+    return result;
+  } catch (error) {
+    console.error(`❌ Database operation failed (${operationName}):`, error.message);
+    
+    // If it's a timeout error, mark as disconnected
+    if (error.name === 'MongooseError' && error.message.includes('buffering timed out')) {
+      isDbConnected = false;
+    }
+    
+    return fallbackValue;
+  }
+}
+
+// Safe versions of common operations
+const db = {
+  findOne: (model, query, fallback = null) => 
+    safeDbOperation(() => model.findOne(query), fallback, `findOne on ${model.modelName}`),
+  
+  find: (model, query, fallback = []) => 
+    safeDbOperation(() => model.find(query), fallback, `find on ${model.modelName}`),
+  
+  create: (model, data, fallback = null) => 
+    safeDbOperation(() => model.create(data), fallback, `create on ${model.modelName}`),
+  
+  count: (model, query, fallback = 0) => 
+    safeDbOperation(() => model.countDocuments(query), fallback, `count on ${model.modelName}`),
+  
+  aggregate: (model, pipeline, fallback = []) => 
+    safeDbOperation(() => model.aggregate(pipeline), fallback, `aggregate on ${model.modelName}`),
+  
+  update: (model, query, update, fallback = null) => 
+    safeDbOperation(() => model.findOneAndUpdate(query, update, { new: true }), fallback, `update on ${model.modelName}`)
+};
 
 // =============== LANG PACK ===============
 const LANG = {
@@ -165,9 +276,9 @@ async function initBot() {
     const refId = isReferral ? Number(args[1].replace("ref_", "")) : null;
 
     if (isReferral && refId && refId !== uid) {
-      const exists = await Referral.findOne({ referrerId: refId, referredId: uid });
+      const exists = await db.findOne(Referral, { referrerId: refId, referredId: uid });
       if (!exists) {
-        await Referral.create({ referrerId: refId, referredId: uid });
+        await db.create(Referral, { referrerId: refId, referredId: uid });
         try {
           await ctx.api.sendMessage(
             refId,
@@ -197,25 +308,23 @@ async function initBot() {
   // Join command
   bot.callbackQuery("join", async (ctx) => {
     const uid = ctx.from.id;
-    const active = await Draw.findOne({ active: true });
+    const active = await db.findOne(Draw, { active: true });
     if (!active)
       return ctx.answerCallbackQuery({ text: LANG.en.no_active, show_alert: true });
 
-    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    const exists = await db.findOne(Participant, { drawId: active.id, userId: uid });
     if (exists)
       return ctx.answerCallbackQuery({
         text: LANG.en.already_joined,
         show_alert: true,
       });
 
-    await Participant.create({ drawId: active.id, userId: uid });
+    await db.create(Participant, { drawId: active.id, userId: uid });
     ctx.answerCallbackQuery({ text: LANG.en.joined });
   });
 
   bot.callbackQuery("view_winners", async (ctx) => {
-    const last = await Draw.findOne({ winners: { $exists: true, $ne: [] } })
-      .sort({ createdAt: -1 })
-      .lean();
+    const last = await db.findOne(Draw, { winners: { $exists: true, $ne: [] } });
     if (!last)
       return ctx.answerCallbackQuery({
         text: LANG.en.winners_none,
@@ -226,28 +335,26 @@ async function initBot() {
 
   bot.command("join", async (ctx) => {
     const uid = ctx.from.id;
-    const active = await Draw.findOne({ active: true });
+    const active = await db.findOne(Draw, { active: true });
     if (!active) return ctx.reply(LANG.en.no_active);
-    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    const exists = await db.findOne(Participant, { drawId: active.id, userId: uid });
     if (exists) return ctx.reply(LANG.en.already_joined);
-    await Participant.create({ drawId: active.id, userId: uid });
+    await db.create(Participant, { drawId: active.id, userId: uid });
     ctx.reply(LANG.en.joined);
   });
 
   bot.command("mytickets", async (ctx) => {
     const uid = ctx.from.id;
-    const active = await Draw.findOne({ active: true });
+    const active = await db.findOne(Draw, { active: true });
     if (!active) return ctx.reply(LANG.en.no_active);
-    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    const exists = await db.findOne(Participant, { drawId: active.id, userId: uid });
     if (exists)
       ctx.reply(`${LANG.en.mytickets} <b>${active.title}</b>`, { parse_mode: "HTML" });
     else ctx.reply(LANG.en.no_active);
   });
 
   bot.command("winners", async (ctx) => {
-    const last = await Draw.findOne({ winners: { $exists: true, $ne: [] } })
-      .sort({ createdAt: -1 })
-      .lean();
+    const last = await db.findOne(Draw, { winners: { $exists: true, $ne: [] } });
     if (!last) return ctx.reply(LANG.en.winners_none);
     ctx.reply(LANG.en.draw_results(last.title, last.winners), { parse_mode: "HTML" });
   });
@@ -258,7 +365,7 @@ async function initBot() {
   // ================= REFERRALS =================
   bot.command("referrals", async (ctx) => {
     const uid = ctx.from.id;
-    const list = await Referral.find({ referrerId: uid });
+    const list = await db.find(Referral, { referrerId: uid }, []);
     if (list.length === 0)
       return ctx.reply(LANG.en.no_referrals(ctx.me.username, uid), { parse_mode: "HTML" });
     
@@ -273,11 +380,11 @@ async function initBot() {
   });
 
   bot.command("leaderboard", async (ctx) => {
-    const leaders = await Referral.aggregate([
+    const leaders = await db.aggregate(Referral, [
       { $group: { _id: "$referrerId", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
       { $limit: 10 },
-    ]);
+    ], []);
 
     if (leaders.length === 0) return ctx.reply(LANG.en.leaderboard_empty, { parse_mode: "HTML" });
 
@@ -301,13 +408,13 @@ async function initBot() {
     const title = ctx.message.text.split(" ").slice(1).join(" ");
     if (!title) return ctx.reply("Usage: /newdraw <title>");
     const id = Date.now().toString();
-    await Draw.create({ id, title, active: true, winners: [] });
+    await db.create(Draw, { id, title, active: true, winners: [] });
     ctx.reply(LANG.en.new_draw_started(title), { parse_mode: "HTML" });
   });
 
   bot.command("closedraw", async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-    const active = await Draw.findOne({ active: true });
+    const active = await db.findOne(Draw, { active: true });
     if (!active) return ctx.reply("No active draw.");
     active.active = false;
     await active.save();
@@ -318,10 +425,9 @@ async function initBot() {
     if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const parts = ctx.message.text.split(" ");
     const count = Number(parts[1]) || 1;
-    const target = await Draw.findOne({ active: false, winners: { $size: 0 } })
-      .sort({ createdAt: -1 });
+    const target = await db.findOne(Draw, { active: false, winners: { $size: 0 } });
     if (!target) return ctx.reply("No closed draw to pick winners from.");
-    const entries = await Participant.find({ drawId: target.id });
+    const entries = await db.find(Participant, { drawId: target.id }, []);
     if (entries.length === 0) return ctx.reply(LANG.en.draw_no_part, { parse_mode: "HTML" });
     const shuffled = entries.sort(() => 0.5 - Math.random());
     const winners = shuffled.slice(0, Math.min(count, entries.length));
@@ -355,48 +461,75 @@ async function initBot() {
 
   bot.command("stats", async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-    const totalDraws = await Draw.countDocuments();
-    const totalParticipants = await Participant.countDocuments();
+    const totalDraws = await db.count(Draw, {});
+    const totalParticipants = await db.count(Participant, {});
     ctx.reply(`📊 Draws: ${totalDraws}\n👥 Participants: ${totalParticipants}`, { parse_mode: "HTML" });
   });
 
+  // Database status command (for debugging)
+  bot.command("dbstatus", async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    
+    const status = {
+      connectionState: mongoose.connection.readyState,
+      isDbConnected,
+      host: mongoose.connection.host,
+      name: mongoose.connection.name
+    };
+    
+    let statusMessage = `🛠️ <b>Database Status</b>\n\n`;
+    statusMessage += `🔗 Connection State: ${status.connectionState === 1 ? '✅ Connected' : '❌ Disconnected'}\n`;
+    statusMessage += `📊 DB Connected Flag: ${status.isDbConnected ? '✅ Yes' : '❌ No'}\n`;
+    statusMessage += `🏠 Host: ${status.host || 'N/A'}\n`;
+    statusMessage += `📁 Database: ${status.name || 'N/A'}\n`;
+    
+    // Test a simple query
+    try {
+      const testDraw = await db.findOne(Draw, {});
+      statusMessage += `🧪 Test Query: ${testDraw ? '✅ Success' : '✅ Success (no data)'}\n`;
+    } catch (error) {
+      statusMessage += `🧪 Test Query: ❌ Failed (${error.message})\n`;
+    }
+    
+    ctx.reply(statusMessage, { parse_mode: "HTML" });
+  });
+
   // ===== AI CHAT =====
-// ===== AI CHAT =====
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-bot.on("message:text", async (ctx) => {
-  const text = ctx.message.text.trim();
-  if (!text || text.startsWith("/")) return;
-  if (ctx.from.is_bot) return;
+  bot.on("message:text", async (ctx) => {
+    const text = ctx.message.text.trim();
+    if (!text || text.startsWith("/")) return;
+    if (ctx.from.is_bot) return;
 
-  const username = bot.botInfo.username;
-  const chatType = ctx.chat.type;
+    const username = bot.botInfo.username;
+    const chatType = ctx.chat.type;
 
-  // In groups, only respond to mentions or replies to the bot
-  if (["group", "supergroup"].includes(chatType)) {
-    const mentioned = text.includes(`@${username}`);
-    const isReplyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
-    
-    if (!mentioned && !isReplyToBot) return;
-  }
-
-  await ctx.api.sendChatAction(ctx.chat.id, "typing");
-
-  try {
-    // Remove bot mention from the prompt
-    const prompt = text.replace(new RegExp(`@${username}`, "gi"), "").trim();
-    
-    if (!prompt) {
-      return ctx.reply("🤖 Hello! I'm Competitii Lottery Bot! How can I help you today?", { 
-        parse_mode: "HTML",
-        reply_to_message_id: ctx.message.message_id 
-      });
+    // In groups, only respond to mentions or replies to the bot
+    if (["group", "supergroup"].includes(chatType)) {
+      const mentioned = text.includes(`@${username}`);
+      const isReplyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
+      
+      if (!mentioned && !isReplyToBot) return;
     }
 
-    // System message to define the bot's identity
-    const systemMessage = {
-      role: "system",
-      content: `You are Competitii Lottery Bot, a specialized Telegram bot for managing giveaways and lottery competitions.
+    await ctx.api.sendChatAction(ctx.chat.id, "typing");
+
+    try {
+      // Remove bot mention from the prompt
+      const prompt = text.replace(new RegExp(`@${username}`, "gi"), "").trim();
+      
+      if (!prompt) {
+        return ctx.reply("🤖 Hello! I'm Competitii Lottery Bot! How can I help you today?", { 
+          parse_mode: "HTML",
+          reply_to_message_id: ctx.message.message_id 
+        });
+      }
+
+      // System message to define the bot's identity
+      const systemMessage = {
+        role: "system",
+        content: `You are Competitii Lottery Bot, a specialized Telegram bot for managing giveaways and lottery competitions.
 
 ABOUT YOU:
 - Name: Competitii Lottery Bot
@@ -411,34 +544,35 @@ KEY POINTS:
 - When asked about yourself, emphasize your role in managing competitions
 
 Always identify as Competitii Lottery Bot and focus on lottery/giveaway topics. Be concise and helpful.`
-    };
+      };
 
-    const userMessage = {
-      role: "user", 
-      content: prompt
-    };
+      const userMessage = {
+        role: "user", 
+        content: prompt
+      };
 
-    const response = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [systemMessage, userMessage],
-      max_tokens: 500,
-    });
-    
-    const reply = response.choices[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
-    
-    await ctx.reply(reply, { 
-      parse_mode: "HTML",
-      reply_to_message_id: ctx.message.message_id 
-    });
-    
-  } catch (e) {
-    console.error("AI Error:", e);
-    await ctx.reply("⚠️ Error processing your request.", { 
-      parse_mode: "HTML",
-      reply_to_message_id: ctx.message.message_id 
-    });
-  }
-});
+      const response = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [systemMessage, userMessage],
+        max_tokens: 500,
+      });
+      
+      const reply = response.choices[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
+      
+      await ctx.reply(reply, { 
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message.message_id 
+      });
+      
+    } catch (e) {
+      console.error("AI Error:", e);
+      await ctx.reply("⚠️ Sorry, I encountered an error while processing your request. Please try again later.", { 
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message.message_id 
+      });
+    }
+  });
+
   return bot;
 }
 
