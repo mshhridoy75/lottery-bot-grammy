@@ -1,13 +1,12 @@
 /**
- * 🌟 Competitii Bot (Node.js + grammY + MongoDB + OpenAI)
- * - Persistent sessions via @grammyjs/session + @grammyjs/storage-file
- * - Auto retry for failed Telegram API requests (@grammyjs/auto-retry)
- * - Inline buttons, bilingual (EN/RO), admin draw tools
- * - Referral + Leaderboard system
+ * 🌟 Competitii Bot (grammY + MongoDB + OpenAI)
+ * - Auto restart on crash
+ * - HTML formatting in messages
+ * - Persistent sessions via FileAdapter
+ * - Referral + Leaderboard + AI replies
  */
 
-
-import 'dotenv/config';
+import "dotenv/config";
 import { Bot, InlineKeyboard, session } from "grammy";
 import { autoRetry } from "@grammyjs/auto-retry";
 import { FileAdapter } from "@grammyjs/storage-file";
@@ -22,281 +21,475 @@ const ADMIN_ID = Number(process.env.ADMIN_ID || 0);
 const CHANNEL_USERNAME = process.env.CHANNEL_USERNAME || "@CompetitiiChannel";
 
 if (!BOT_TOKEN) {
-  console.error("❌ BOT_TOKEN not found in .env");
+  console.error("❌ BOT_TOKEN missing in .env file");
   process.exit(1);
 }
 
 // =============== DATABASE ===============
-mongoose.connect(process.env.MONGO_URI)
-.then(() => console.log("✅ Connected to MongoDB"))
-.catch(err => console.error("❌ MongoDB connection error:", err));
+mongoose
+  .connect(process.env.MONGO_URI)
+  .then(() => console.log("✅ Connected to MongoDB"))
+  .catch((err) => console.error("❌ MongoDB connection error:", err));
 
-const drawSchema = new mongoose.Schema({
-  id: String,
-  title: String,
-  active: Boolean,
-  winners: [String],
-}, { timestamps: true });
+const drawSchema = new mongoose.Schema(
+  {
+    id: String,
+    title: String,
+    active: Boolean,
+    winners: [String],
+  },
+  { timestamps: true }
+);
 
-const participantSchema = new mongoose.Schema({
-  drawId: String,
-  userId: Number,
-}, { timestamps: true });
+const participantSchema = new mongoose.Schema(
+  {
+    drawId: String,
+    userId: Number,
+  },
+  { timestamps: true }
+);
 
-const referralSchema = new mongoose.Schema({
-  referrerId: Number,
-  referredId: Number,
-}, { timestamps: true });
+const referralSchema = new mongoose.Schema(
+  {
+    referrerId: Number,
+    referredId: Number,
+  },
+  { timestamps: true }
+);
 
 const Draw = mongoose.model("Draw", drawSchema);
 const Participant = mongoose.model("Participant", participantSchema);
 const Referral = mongoose.model("Referral", referralSchema);
 
-// =============== BOT SETUP ===============
-const bot = new Bot(BOT_TOKEN);
-bot.api.config.use(autoRetry());
-
-const DATA_DIR = path.resolve("./data");
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-bot.use(session({
-  initial: () => ({ lang: "en" }),
-  storage: new FileAdapter({ path: path.join(DATA_DIR, "sessions.json") }),
-}));
-
-// =============== LANGUAGE PACK ===============
+// =============== LANG PACK ===============
 const LANG = {
   en: {
-    welcome: "🎉 Welcome to Competitii!\nJoin random giveaways and win prizes 🏆",
-    start_menu: "Use the buttons below or type commands.\nCommands: /join /mytickets /winners /rules /about",
+    welcome:
+      "🎉 <b>Welcome to Competitii!</b>\nJoin random giveaways and win prizes 🏆",
+    start_menu:
+      "Use the buttons below or type commands:\n<code>/join</code> / <code>/mytickets</code> / <code>/winners</code> / <code>/rules</code> / <code>/about</code>",
     joined: "✅ You're in! Good luck 🍀",
     already_joined: "⚠️ You already joined this draw!",
-    no_active: "😕 No active draw right now. Stay tuned on our channel!",
-    mytickets: "🎟️ You are in the current draw:",
-    winners_none: "No winners announced yet.",
-    rules: "📜 Rules:\n1) Join active draws.\n2) One user = one entry.\n3) Winners are chosen randomly.\n4) Admin decisions are final.",
-    about: "🤖 Competitii — Fair • Transparent • Fun\nChannel: " + CHANNEL_USERNAME,
-    admin_only: "❌ This command is for admin only.",
-    new_draw_started: (t) => `✅ New draw started: *${t}*`,
-    closed_draw: (t) => `🚫 Entries closed for: *${t}*`,
-    draw_no_part: "No participants in this draw.",
-    draw_results: (t, list) => `🎰 Draw Results - ${t}\n\n🏆 Winners:\n${list.join("\n")}`,
-    prompt_draw_count: "Usage: /draw <count>",
-    ref_link: (username, uid) => `🔗 Your referral link:\nhttps://t.me/${username}?start=ref_${uid}`,
-    new_referral: (name) => `👥 New referral joined: ${name}`,
-    no_referrals: (username, uid) => `😕 You haven't referred anyone yet.\nShare your link:\nhttps://t.me/${username}?start=ref_${uid}`,
-    referral_list: (count, list, username, uid) =>
-      `👥 You have referred *${count}* user(s):\n${list}\n\nKeep sharing your link!\nhttps://t.me/${username}?start=ref_${uid}`,
-    leaderboard_empty: "📊 No referrals yet. Be the first!",
-    leaderboard_title: "🏆 *Top Inviters*",
-    leaderboard_entry: (rank, name, count) => `${rank}. ${name} — ${count} referrals`,
+    no_active: "😕 No active draw right now.",
+    rules:
+      "📜 <b>Rules</b>:\n1️⃣ One user = one entry\n2️⃣ Winners are random\n3️⃣ Admin decisions are final.",
+    about:
+      "🤖 <b>Competitii</b> — Fair • Transparent • Fun\nChannel: " +
+      CHANNEL_USERNAME,
+    new_draw_started: (t) => `✅ New draw started: <b>${t}</b>`,
+    closed_draw: (t) => `🚫 Entries closed for: <b>${t}</b>`,
+    draw_results: (t, list) =>
+      `🎰 <b>Draw Results - ${t}</b>\n\n🏆 Winners:\n${list.join("\n")}`,
+    admin_only: "❌ Admin only command.",
+    winners_none: "😕 No past winners yet.",
+    mytickets: "🎟️ You are registered in",
+    ref_link: (u, id) =>
+      `👥 Invite friends: https://t.me/${u}?start=ref_${id}`,
+    new_referral: (n) => `🎉 New referral: ${n}`,
+    no_referrals: (u, id) =>
+      `😕 You have no referrals yet.\nShare your link:\nhttps://t.me/${u}?start=ref_${id}`,
+    referral_list: (c, list, u, id) =>
+      `👥 You have ${c} referrals:\n${list}\n\nShare your link:\nhttps://t.me/${u}?start=ref_${id}`,
+    leaderboard_title: "🏆 <b>Top Referrers</b>",
+    leaderboard_entry: (r, n, c) => `${r}. ${n} — ${c} invites`,
+    leaderboard_empty: "😕 No one invited anyone yet.",
+    draw_no_part: "😕 No participants in this draw.",
   },
   ro: {
-    welcome: "🎉 Salut! Bine ai venit la Competitii!\nParticipă la tombole și câștigă premii 🏆",
-    start_menu: "Folosește butoanele de mai jos sau tastează comenzi.\nComenzi: /join /mytickets /winners /rules /about",
+    welcome:
+      "🎉 <b>Bine ai venit la Competitii!</b>\nParticipă la tombole și câștigă premii 🏆",
+    start_menu:
+      "Folosește butoanele de mai jos sau tastează comenzi:\n<code>/join</code> / <code>/mytickets</code> / <code>/winners</code> / <code>/rules</code> / <code>/about</code>",
     joined: "✅ Ești înscris! Mult succes 🍀",
     already_joined: "⚠️ Ești deja înscris la această tombolă!",
-    no_active: "😕 Nu este nicio tombolă activă acum. Urmărește canalul nostru!",
-    mytickets: "🎟️ Ești înscris la tombola curentă:",
-    winners_none: "Nu au fost anunțați câștigători încă.",
-    rules: "📜 Reguli:\n1) Folosește Join pentru a intra la tombolele active.\n2) Un utilizator = o înscriere.\n3) Câștigătorii sunt aleși la întâmplare.\n4) Deciziile adminilor sunt finale.",
-    about: "🤖 Competitii — Corect • Transparent • Distractiv\nCanal: " + CHANNEL_USERNAME,
-    admin_only: "❌ Această comandă este doar pentru admin.",
-    new_draw_started: (t) => `✅ A început o nouă tombolă: *${t}*`,
-    closed_draw: (t) => `🚫 Înscrierile s-au încheiat pentru: *${t}*`,
-    draw_no_part: "Nu există participanți la această tombolă.",
-    draw_results: (t, list) => `🎰 Rezultatele tombolei - ${t}\n\n🏆 Câștigători:\n${list.join("\n")}`,
-    prompt_draw_count: "Utilizare: /draw <număr>",
+    no_active: "😕 Nu este nicio tombolă activă acum.",
+    rules:
+      "📜 <b>Reguli</b>:\n1️⃣ Un utilizator = o înscriere\n2️⃣ Câștigătorii sunt aleși aleatoriu\n3️⃣ Deciziile adminilor sunt finale.",
+    about:
+      "🤖 <b>Competitii</b> — Corect • Transparent • Distractiv\nCanal: " +
+      CHANNEL_USERNAME,
+    new_draw_started: (t) => `✅ A început o nouă tombolă: <b>${t}</b>`,
+    closed_draw: (t) => `🚫 Înscrierile s-au încheiat pentru: <b>${t}</b>`,
+    draw_results: (t, list) =>
+      `🎰 <b>Rezultatele tombolei - ${t}</b>\n\n🏆 Câștigători:\n${list.join(
+        "\n"
+      )}`,
   },
 };
 
-// =============== HELPERS ===============
-const mainKeyboard = (lang) =>
-  new InlineKeyboard()
+// =============== INLINE KEYBOARD ===============
+function mainKeyboard(lang) {
+  return new InlineKeyboard()
     .text(lang === "ro" ? "🎟️ Înscrie-te" : "🎟️ Join", "join")
     .row()
     .text(lang === "ro" ? "🏆 Câștigători" : "🏆 View Winners", "view_winners")
     .row()
     .text(lang === "ro" ? "🌐 Schimbă limba" : "🌐 Switch Language", "switch_lang");
+}
 
-// =============== COMMANDS ===============
-bot.command("start", async (ctx) => {
-  const uid = ctx.from.id;
-  const args = ctx.message.text.split(" ");
-  const refTag = args[1];
-  if (refTag && refTag.startsWith("ref_")) {
-    const refId = Number(refTag.replace("ref_", ""));
-    if (refId && refId !== uid) {
+// ======================================================
+// 🧠 INIT BOT LOGIC
+// ======================================================
+async function initBot() {
+  const bot = new Bot(BOT_TOKEN);
+
+  // Catch all errors
+  bot.catch((err) => console.error("Bot Error:", err));
+
+  // Delete webhook to allow polling
+  try {
+    await bot.api.deleteWebhook({ drop_pending_updates: true });
+    console.log("✅ Webhook cleared");
+  } catch (e) {
+    console.warn("⚠️ Could not clear webhook:", e.message);
+  }
+
+  bot.api.config.use(autoRetry());
+
+  const DATA_DIR = path.resolve("./data");
+  if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
+  bot.use(
+    session({
+      initial: () => ({ lang: "en" }),
+      storage: new FileAdapter({ path: path.join(DATA_DIR, "sessions.json") }),
+    })
+  );
+
+  // ================= USER COMMANDS =================
+  bot.command("start", async (ctx) => {
+    if (!ctx.session.lang) ctx.session.lang = "en";
+    const uid = ctx.from.id;
+    const args = ctx.message.text.split(" ");
+    const isReferral = args[1] && args[1].startsWith("ref_");
+    const refId = isReferral ? Number(args[1].replace("ref_", "")) : null;
+
+    if (isReferral && refId && refId !== uid) {
       const exists = await Referral.findOne({ referrerId: refId, referredId: uid });
       if (!exists) {
         await Referral.create({ referrerId: refId, referredId: uid });
         try {
-          await ctx.api.sendMessage(refId, LANG.en.new_referral(ctx.from.first_name || ctx.from.username || uid));
-        } catch {}
+          await ctx.api.sendMessage(
+            refId,
+            LANG.en.new_referral(ctx.from.first_name || ctx.from.username || uid)
+          );
+        } catch (err) {
+          console.error("Failed to send referral notification:", err);
+        }
       }
     }
-  }
 
-  ctx.reply(
-    `${LANG.en.welcome}\n\n${LANG.en.start_menu}\n\n${LANG.en.ref_link(ctx.me.username, uid)}`,
-    { reply_markup: mainKeyboard(ctx.session.lang) }
-  );
-});
+    await ctx.reply(
+      `${LANG.en.welcome}\n\n${LANG.en.start_menu}\n\n${LANG.en.ref_link(
+        ctx.me.username,
+        uid
+      )}`,
+      { parse_mode: "HTML", reply_markup: mainKeyboard(ctx.session.lang) }
+    );
+  });
 
-bot.callbackQuery("switch_lang", async (ctx) => {
-  ctx.session.lang = ctx.session.lang === "en" ? "ro" : "en";
-  await ctx.answerCallbackQuery({ text: "Language switched ✅" });
-  await ctx.editMessageReplyMarkup(mainKeyboard(ctx.session.lang));
-});
+  bot.callbackQuery("switch_lang", (ctx) => {
+    ctx.session.lang = ctx.session.lang === "en" ? "ro" : "en";
+    ctx.answerCallbackQuery({ text: "✅ Language switched" }).catch(() => {});
+    ctx.editMessageReplyMarkup(mainKeyboard(ctx.session.lang)).catch(() => {});
+  });
 
-bot.callbackQuery("join", async (ctx) => {
-  const uid = ctx.from.id;
-  const active = await Draw.findOne({ active: true });
-  if (!active)
-    return ctx.answerCallbackQuery({ text: LANG.en.no_active, show_alert: true });
-  const already = await Participant.findOne({ drawId: active.id, userId: uid });
-  if (already)
-    return ctx.answerCallbackQuery({ text: LANG.en.already_joined, show_alert: true });
-  await Participant.create({ drawId: active.id, userId: uid });
-  await ctx.answerCallbackQuery({ text: LANG.en.joined });
-});
+  // Join command
+  bot.callbackQuery("join", async (ctx) => {
+    const uid = ctx.from.id;
+    const active = await Draw.findOne({ active: true });
+    if (!active)
+      return ctx.answerCallbackQuery({ text: LANG.en.no_active, show_alert: true });
 
-bot.callbackQuery("view_winners", async (ctx) => {
-  const last = await Draw.findOne({ winners: { $exists: true, $ne: [] } }).sort({ createdAt: -1 });
-  if (!last)
-    return ctx.answerCallbackQuery({ text: LANG.en.winners_none, show_alert: true });
-  await ctx.reply(LANG.en.draw_results(last.title, last.winners));
-});
+    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    if (exists)
+      return ctx.answerCallbackQuery({
+        text: LANG.en.already_joined,
+        show_alert: true,
+      });
 
-bot.command("newdraw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only);
-  const title = ctx.message.text.split(" ").slice(1).join(" ");
-  if (!title) return ctx.reply("Usage: /newdraw <title>");
-  const id = Date.now().toString();
-  await Draw.create({ id, title, active: true, winners: [] });
-  ctx.reply(LANG.en.new_draw_started(title), { parse_mode: "Markdown" });
-});
+    await Participant.create({ drawId: active.id, userId: uid });
+    ctx.answerCallbackQuery({ text: LANG.en.joined });
+  });
 
-bot.command("closedraw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only);
-  const active = await Draw.findOne({ active: true });
-  if (!active) return ctx.reply("No active draw.");
-  active.active = false;
-  await active.save();
-  ctx.reply(LANG.en.closed_draw(active.title), { parse_mode: "Markdown" });
-});
+  bot.callbackQuery("view_winners", async (ctx) => {
+    const last = await Draw.findOne({ winners: { $exists: true, $ne: [] } })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (!last)
+      return ctx.answerCallbackQuery({
+        text: LANG.en.winners_none,
+        show_alert: true,
+      });
+    ctx.reply(LANG.en.draw_results(last.title, last.winners), { parse_mode: "HTML" });
+  });
 
-bot.command("draw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only);
-  const count = Number(ctx.message.text.split(" ")[1]) || 1;
-  const draw = await Draw.findOne({ active: false, winners: { $size: 0 } }).sort({ createdAt: -1 });
-  if (!draw) return ctx.reply("No closed draw available.");
-  const participants = await Participant.find({ drawId: draw.id });
-  if (participants.length === 0) return ctx.reply(LANG.en.draw_no_part);
-  const shuffled = participants.sort(() => 0.5 - Math.random()).slice(0, count);
-  const winners = [];
-  for (const p of shuffled) {
-    try {
-      const chat = await bot.api.getChat(p.userId);
-      winners.push(chat.username ? "@" + chat.username : chat.first_name || p.userId);
-    } catch {
-      winners.push(String(p.userId));
+  bot.command("join", async (ctx) => {
+    const uid = ctx.from.id;
+    const active = await Draw.findOne({ active: true });
+    if (!active) return ctx.reply(LANG.en.no_active);
+    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    if (exists) return ctx.reply(LANG.en.already_joined);
+    await Participant.create({ drawId: active.id, userId: uid });
+    ctx.reply(LANG.en.joined);
+  });
+
+  bot.command("mytickets", async (ctx) => {
+    const uid = ctx.from.id;
+    const active = await Draw.findOne({ active: true });
+    if (!active) return ctx.reply(LANG.en.no_active);
+    const exists = await Participant.findOne({ drawId: active.id, userId: uid });
+    if (exists)
+      ctx.reply(`${LANG.en.mytickets} <b>${active.title}</b>`, { parse_mode: "HTML" });
+    else ctx.reply(LANG.en.no_active);
+  });
+
+  bot.command("winners", async (ctx) => {
+    const last = await Draw.findOne({ winners: { $exists: true, $ne: [] } })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (!last) return ctx.reply(LANG.en.winners_none);
+    ctx.reply(LANG.en.draw_results(last.title, last.winners), { parse_mode: "HTML" });
+  });
+
+  bot.command("rules", (ctx) => ctx.reply(LANG.en.rules, { parse_mode: "HTML" }));
+  bot.command("about", (ctx) => ctx.reply(LANG.en.about, { parse_mode: "HTML" }));
+
+  // ================= REFERRALS =================
+  bot.command("referrals", async (ctx) => {
+    const uid = ctx.from.id;
+    const list = await Referral.find({ referrerId: uid });
+    if (list.length === 0)
+      return ctx.reply(LANG.en.no_referrals(ctx.me.username, uid), { parse_mode: "HTML" });
+    
+    // Use HTML formatting for clickable links
+    const userList = list
+      .map((u, index) => `${index + 1}. <a href="tg://user?id=${u.referredId}">User ${u.referredId}</a>`)
+      .join("\n");
+    
+    ctx.reply(LANG.en.referral_list(list.length, userList, ctx.me.username, uid), {
+      parse_mode: "HTML",
+    });
+  });
+
+  bot.command("leaderboard", async (ctx) => {
+    const leaders = await Referral.aggregate([
+      { $group: { _id: "$referrerId", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 },
+    ]);
+
+    if (leaders.length === 0) return ctx.reply(LANG.en.leaderboard_empty, { parse_mode: "HTML" });
+
+    let msg = `${LANG.en.leaderboard_title}\n\n`;
+    for (let i = 0; i < leaders.length; i++) {
+      const entry = leaders[i];
+      let name = `User ${entry._id}`;
+      try {
+        const chat = await ctx.api.getChat(entry._id);
+        if (chat.username) name = "@" + chat.username;
+        else if (chat.first_name) name = chat.first_name;
+      } catch {}
+      msg += LANG.en.leaderboard_entry(i + 1, name, entry.count) + "\n";
     }
-  }
-  draw.winners = winners;
-  await draw.save();
-  const msg = LANG.en.draw_results(draw.title, winners);
-  await ctx.reply(msg, { parse_mode: "Markdown" });
-  try {
-    await bot.api.sendMessage(CHANNEL_USERNAME, `📢 *Competitii Draw Results*\n\n${msg}`, { parse_mode: "Markdown" });
-  } catch {}
-});
+    ctx.reply(msg, { parse_mode: "HTML" });
+  });
 
-bot.command("leaderboard", async (ctx) => {
-  const board = await Referral.aggregate([
-    { $group: { _id: "$referrerId", count: { $sum: 1 } } },
-    { $sort: { count: -1 } },
-    { $limit: 10 },
-  ]);
-  if (!board.length) return ctx.reply(LANG.en.leaderboard_empty);
-  let msg = `${LANG.en.leaderboard_title}\n\n`;
-  for (let i = 0; i < board.length; i++) {
-    const e = board[i];
-    let name = `User ${e._id}`;
+  // ================= ADMIN COMMANDS =================
+  bot.command("newdraw", async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    const title = ctx.message.text.split(" ").slice(1).join(" ");
+    if (!title) return ctx.reply("Usage: /newdraw <title>");
+    const id = Date.now().toString();
+    await Draw.create({ id, title, active: true, winners: [] });
+    ctx.reply(LANG.en.new_draw_started(title), { parse_mode: "HTML" });
+  });
+
+  bot.command("closedraw", async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    const active = await Draw.findOne({ active: true });
+    if (!active) return ctx.reply("No active draw.");
+    active.active = false;
+    await active.save();
+    ctx.reply(LANG.en.closed_draw(active.title), { parse_mode: "HTML" });
+  });
+
+  bot.command("draw", async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    const parts = ctx.message.text.split(" ");
+    const count = Number(parts[1]) || 1;
+    const target = await Draw.findOne({ active: false, winners: { $size: 0 } })
+      .sort({ createdAt: -1 });
+    if (!target) return ctx.reply("No closed draw to pick winners from.");
+    const entries = await Participant.find({ drawId: target.id });
+    if (entries.length === 0) return ctx.reply(LANG.en.draw_no_part, { parse_mode: "HTML" });
+    const shuffled = entries.sort(() => 0.5 - Math.random());
+    const winners = shuffled.slice(0, Math.min(count, entries.length));
+    const winnerMentions = [];
+
+    for (const w of winners) {
+      try {
+        const chat = await bot.api.getChat(w.userId);
+        if (chat.username) winnerMentions.push("@" + chat.username);
+        else if (chat.first_name)
+          winnerMentions.push(`${chat.first_name} (id:${w.userId})`);
+        else winnerMentions.push(String(w.userId));
+      } catch {
+        winnerMentions.push(String(w.userId));
+      }
+    }
+
+    target.winners = winnerMentions;
+    await target.save();
+    const msg = LANG.en.draw_results(target.title, target.winners);
+    ctx.reply(msg, { parse_mode: "HTML" });
+
     try {
-      const chat = await ctx.api.getChat(e._id);
-      name = chat.username ? "@" + chat.username : chat.first_name || name;
-    } catch {}
-    msg += LANG.en.leaderboard_entry(i + 1, name, e.count) + "\n";
-  }
-  ctx.reply(msg, { parse_mode: "Markdown" });
-});
-// --- /stats ---
-bot.command("stats", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only);
-  const totalDraws = await Draw.countDocuments();
-  const totalParts = await Participant.countDocuments();
-  const totalRefs = await Referral.countDocuments();
-  ctx.reply(`📊 Stats:\n🎟️ Draws: ${totalDraws}\n👥 Participants: ${totalParts}\n🔗 Referrals: ${totalRefs}`);
-});
+      await bot.api.sendMessage(CHANNEL_USERNAME, `📢 ${msg}`, {
+        parse_mode: "HTML",
+      });
+    } catch {
+      console.log("⚠️ Could not post to channel.");
+    }
+  });
 
-// --- /backupdb ---
-bot.command("backupdb", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only);
-  const backup = {
-    draws: await Draw.find(),
-    participants: await Participant.find(),
-    referrals: await Referral.find(),
-  };
-  const file = path.join(DATA_DIR, `backup_${Date.now()}.json`);
-  fs.writeFileSync(file, JSON.stringify(backup, null, 2));
-  await ctx.replyWithDocument(new InputFile(file));
-});
+  bot.command("stats", async (ctx) => {
+    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    const totalDraws = await Draw.countDocuments();
+    const totalParticipants = await Participant.countDocuments();
+    ctx.reply(`📊 Draws: ${totalDraws}\n👥 Participants: ${totalParticipants}`, { parse_mode: "HTML" });
+  });
 
-// =============== AI CHAT ===============
+  // ===== AI CHAT =====
+// ===== AI CHAT =====
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 bot.on("message:text", async (ctx) => {
-  const text = ctx.message.text?.trim();
+  const text = ctx.message.text.trim();
   if (!text || text.startsWith("/")) return;
   if (ctx.from.is_bot) return;
 
+  const username = bot.botInfo.username;
   const chatType = ctx.chat.type;
-  const username = bot.botInfo?.username || "competitii_bot";
-  if (["group", "supergroup", "channel"].includes(chatType)) {
-    const isMention = text.includes(`@${username}`);
-    const isReplyToBot = ctx.message.reply_to_message?.from?.username === username;
-    if (!isMention && !isReplyToBot) return;
+
+  // In groups, only respond to mentions or replies to the bot
+  if (["group", "supergroup"].includes(chatType)) {
+    const mentioned = text.includes(`@${username}`);
+    const isReplyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
+    
+    if (!mentioned && !isReplyToBot) return;
   }
 
-  await ctx.reply("🤖 Thinking...");
+  await ctx.api.sendChatAction(ctx.chat.id, "typing");
+
   try {
-    const clean = text.replace(`@${username}`, "").trim();
-    const completion = await openai.chat.completions.create({
+    // Remove bot mention from the prompt
+    const prompt = text.replace(new RegExp(`@${username}`, "gi"), "").trim();
+    
+    if (!prompt) {
+      return ctx.reply("🤖 Hello! I'm Competitii Lottery Bot! How can I help you today?", { 
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message.message_id 
+      });
+    }
+
+    // System message to define the bot's identity
+    const systemMessage = {
+      role: "system",
+      content: `You are Competitii Lottery Bot, a specialized Telegram bot for managing giveaways and lottery competitions.
+
+ABOUT YOU:
+- Name: Competitii Lottery Bot
+- Purpose: Manage lottery draws and giveaways
+- Features: Join draws, check winners, referral system, leaderboard
+- Personality: Friendly, helpful, enthusiastic about giveaways
+
+KEY POINTS:
+- You help users participate in random draws and win prizes
+- You have commands like /join, /winners, /referrals, /leaderboard
+- You're fair, transparent, and fun
+- When asked about yourself, emphasize your role in managing competitions
+
+Always identify as Competitii Lottery Bot and focus on lottery/giveaway topics. Be concise and helpful.`
+    };
+
+    const userMessage = {
+      role: "user", 
+      content: prompt
+    };
+
+    const response = await openai.chat.completions.create({
       model: "gpt-4o-mini",
-      messages: [{ role: "user", content: clean }],
+      messages: [systemMessage, userMessage],
+      max_tokens: 500,
     });
-    const reply = completion.choices[0]?.message?.content || "Hmm... nu am un răspuns acum.";
-    await ctx.reply(reply, { reply_to_message_id: ctx.message.message_id });
+    
+    const reply = response.choices[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
+    
+    await ctx.reply(reply, { 
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message.message_id 
+    });
+    
   } catch (e) {
     console.error("AI Error:", e);
-    await ctx.reply("⚠️ Oops, ceva nu a mers bine cu AI-ul.");
+    await ctx.reply("⚠️ Error processing your request.", { 
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message.message_id 
+    });
   }
 });
+  return bot;
+}
 
-// =============== START ===============
+// ======================================================
+// 🔁 AUTO-RESTART SAFE WRAPPER
+// ======================================================
+let botInstance = null;
 
-process.once("SIGINT", () => bot.stop());
-process.once("SIGTERM", () => bot.stop());
-
-(async () => {
+async function startBot() {
   try {
+    if (botInstance) {
+      console.log("🛑 Stopping previous bot instance...");
+      await botInstance.stop();
+      botInstance = null; // important: clear the reference
+    }
+
     console.log("🚀 Starting Competitii Bot...");
-    await bot.api.deleteWebhook();
-    await bot.init();
-    await bot.start();
-    console.log(`✅ Competitii Bot (@${bot.botInfo.username}) started!`);
+    botInstance = await initBot();
+
+    // Start polling **once**
+    await botInstance.start({
+      onStart: (botInfo) => {
+        console.log(`✅ Competitii Bot (@${botInfo.username}) started successfully!`);
+      },
+    });
+
   } catch (err) {
     console.error("❌ Failed to start bot:", err);
+    setTimeout(startBot, 3000);
   }
-})();
+}
+
+// graceful shutdown
+process.once("SIGINT", async () => {
+  if (botInstance) await botInstance.stop();
+  process.exit(0);
+});
+process.once("SIGTERM", async () => {
+  if (botInstance) await botInstance.stop();
+  process.exit(0);
+});
+
+// auto restart on crash
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught Exception:", err);
+  setTimeout(startBot, 3000);
+});
+process.on("unhandledRejection", (reason) => {
+  console.error("❌ Unhandled Rejection:", reason);
+  setTimeout(startBot, 3000);
+});
+
+// Start the bot for the first time
+startBot();
