@@ -20,6 +20,24 @@ const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = Number(process.env.ADMIN_ID || 0);
 const CHANNEL_USERNAME = process.env.CHANNEL_USERNAME || "@CompetitiiChannel";
 
+// Support multiple admin IDs via ADMIN_IDS (comma separated) or single ADMIN_ID.
+const ADMIN_IDS = (process.env.ADMIN_IDS
+  ? process.env.ADMIN_IDS.split(",").map((s) => Number(s.trim())).filter((n) => !isNaN(n))
+  : ADMIN_ID && ADMIN_ID !== 0
+    ? [ADMIN_ID]
+    : []);
+
+function isAdmin(ctx) {
+  const id = ctx?.from?.id;
+  if (!id) return false;
+  if (ADMIN_IDS.length === 0) return false;
+  return ADMIN_IDS.includes(id);
+}
+
+if (ADMIN_IDS.length === 0) {
+  console.warn("⚠️ No ADMIN_ID or ADMIN_IDS set; admin-only commands will be disabled until configured.");
+}
+
 if (!BOT_TOKEN) {
   console.error("❌ BOT_TOKEN missing in .env file");
   process.exit(1);
@@ -404,7 +422,7 @@ async function initBot() {
 
   // ================= ADMIN COMMANDS =================
   bot.command("newdraw", async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const title = ctx.message.text.split(" ").slice(1).join(" ");
     if (!title) return ctx.reply("Usage: /newdraw <title>");
     const id = Date.now().toString();
@@ -413,7 +431,7 @@ async function initBot() {
   });
 
   bot.command("closedraw", async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const active = await db.findOne(Draw, { active: true });
     if (!active) return ctx.reply("No active draw.");
     active.active = false;
@@ -422,7 +440,7 @@ async function initBot() {
   });
 
   bot.command("draw", async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const parts = ctx.message.text.split(" ");
     const count = Number(parts[1]) || 1;
     const target = await db.findOne(Draw, { active: false, winners: { $size: 0 } });
@@ -460,65 +478,10 @@ async function initBot() {
   });
 
 
-// ================= ADMIN COMMANDS =================
-bot.command("newdraw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-  const title = ctx.message.text.split(" ").slice(1).join(" ");
-  if (!title) return ctx.reply("Usage: /newdraw <title>");
-  const id = Date.now().toString();
-  await db.create(Draw, { id, title, active: true, winners: [] });
-  ctx.reply(LANG.en.new_draw_started(title), { parse_mode: "HTML" });
-});
-
-bot.command("closedraw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-  const active = await db.findOne(Draw, { active: true });
-  if (!active) return ctx.reply("No active draw.");
-  active.active = false;
-  await active.save();
-  ctx.reply(LANG.en.closed_draw(active.title), { parse_mode: "HTML" });
-});
-
-bot.command("draw", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-  const parts = ctx.message.text.split(" ");
-  const count = Number(parts[1]) || 1;
-  const target = await db.findOne(Draw, { active: false, winners: { $size: 0 } });
-  if (!target) return ctx.reply("No closed draw to pick winners from.");
-  const entries = await db.find(Participant, { drawId: target.id }, []);
-  if (entries.length === 0) return ctx.reply(LANG.en.draw_no_part, { parse_mode: "HTML" });
-  const shuffled = entries.sort(() => 0.5 - Math.random());
-  const winners = shuffled.slice(0, Math.min(count, entries.length));
-  const winnerMentions = [];
-
-  for (const w of winners) {
-    try {
-      const chat = await bot.api.getChat(w.userId);
-      if (chat.username) winnerMentions.push("@" + chat.username);
-      else if (chat.first_name)
-        winnerMentions.push(`${chat.first_name} (id:${w.userId})`);
-      else winnerMentions.push(String(w.userId));
-    } catch {
-      winnerMentions.push(String(w.userId));
-    }
-  }
-
-  target.winners = winnerMentions;
-  await target.save();
-  const msg = LANG.en.draw_results(target.title, target.winners);
-  ctx.reply(msg, { parse_mode: "HTML" });
-
-  try {
-    await bot.api.sendMessage(CHANNEL_USERNAME, `📢 ${msg}`, {
-      parse_mode: "HTML",
-    });
-  } catch {
-    console.log("⚠️ Could not post to channel.");
-  }
-});
+// Admin command helpers removed (already defined above)
 
 bot.command("stats", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
   const totalDraws = await db.count(Draw, {});
   const totalParticipants = await db.count(Participant, {});
   ctx.reply(`📊 Draws: ${totalDraws}\n👥 Participants: ${totalParticipants}`, { parse_mode: "HTML" });
@@ -526,7 +489,7 @@ bot.command("stats", async (ctx) => {
 
 // View participants for active draw
 bot.command("participants", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
   
   const active = await db.findOne(Draw, { active: true });
   if (!active) return ctx.reply("❌ No active draw found.");
@@ -569,7 +532,7 @@ bot.command("participants", async (ctx) => {
 
 // Quick participant count
 bot.command("count", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
   
   const active = await db.findOne(Draw, { active: true });
   if (!active) return ctx.reply("❌ No active draw found.");
@@ -580,7 +543,7 @@ bot.command("count", async (ctx) => {
 });
 
   bot.command("stats", async (ctx) => {
-    if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+    if (!isAdmin(ctx)) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const totalDraws = await db.count(Draw, {});
     const totalParticipants = await db.count(Participant, {});
     ctx.reply(`📊 Draws: ${totalDraws}\n👥 Participants: ${totalParticipants}`, { parse_mode: "HTML" });
