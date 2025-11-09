@@ -459,6 +459,214 @@ async function initBot() {
     }
   });
 
+  // View participants for active draw
+bot.command("participants", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  
+  const active = await db.findOne(Draw, { active: true });
+  if (!active) return ctx.reply("❌ No active draw found.");
+
+  const participants = await db.find(Participant, { drawId: active.id }, []);
+  
+  if (participants.length === 0) {
+    return ctx.reply(`❌ No participants have joined <b>${active.title}</b> yet.`, { parse_mode: "HTML" });
+  }
+
+  let message = `👥 <b>Participants for "${active.title}"</b>\n\n`;
+  message += `📊 Total Participants: <b>${participants.length}</b>\n\n`;
+
+  // Show first 50 participants to avoid message length limits
+  const displayCount = Math.min(participants.length, 50);
+  
+  for (let i = 0; i < displayCount; i++) {
+    const participant = participants[i];
+    try {
+      const chat = await ctx.api.getChat(participant.userId);
+      if (chat.username) {
+        message += `${i + 1}. @${chat.username}\n`;
+      } else if (chat.first_name) {
+        message += `${i + 1}. ${chat.first_name} (ID: ${participant.userId})\n`;
+      } else {
+        message += `${i + 1}. User ${participant.userId}\n`;
+      }
+    } catch (error) {
+      message += `${i + 1}. User ${participant.userId} (cannot fetch info)\n`;
+    }
+  }
+
+  if (participants.length > 50) {
+    message += `\n... and ${participants.length - 50} more participants.\n`;
+    message += `Use /export to get the complete list.`;
+  }
+
+  await ctx.reply(message, { parse_mode: "HTML" });
+});
+
+// ================= ADMIN COMMANDS =================
+bot.command("newdraw", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  const title = ctx.message.text.split(" ").slice(1).join(" ");
+  if (!title) return ctx.reply("Usage: /newdraw <title>");
+  const id = Date.now().toString();
+  await db.create(Draw, { id, title, active: true, winners: [] });
+  ctx.reply(LANG.en.new_draw_started(title), { parse_mode: "HTML" });
+});
+
+bot.command("closedraw", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  const active = await db.findOne(Draw, { active: true });
+  if (!active) return ctx.reply("No active draw.");
+  active.active = false;
+  await active.save();
+  ctx.reply(LANG.en.closed_draw(active.title), { parse_mode: "HTML" });
+});
+
+bot.command("draw", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  const parts = ctx.message.text.split(" ");
+  const count = Number(parts[1]) || 1;
+  const target = await db.findOne(Draw, { active: false, winners: { $size: 0 } });
+  if (!target) return ctx.reply("No closed draw to pick winners from.");
+  const entries = await db.find(Participant, { drawId: target.id }, []);
+  if (entries.length === 0) return ctx.reply(LANG.en.draw_no_part, { parse_mode: "HTML" });
+  const shuffled = entries.sort(() => 0.5 - Math.random());
+  const winners = shuffled.slice(0, Math.min(count, entries.length));
+  const winnerMentions = [];
+
+  for (const w of winners) {
+    try {
+      const chat = await bot.api.getChat(w.userId);
+      if (chat.username) winnerMentions.push("@" + chat.username);
+      else if (chat.first_name)
+        winnerMentions.push(`${chat.first_name} (id:${w.userId})`);
+      else winnerMentions.push(String(w.userId));
+    } catch {
+      winnerMentions.push(String(w.userId));
+    }
+  }
+
+  target.winners = winnerMentions;
+  await target.save();
+  const msg = LANG.en.draw_results(target.title, target.winners);
+  ctx.reply(msg, { parse_mode: "HTML" });
+
+  try {
+    await bot.api.sendMessage(CHANNEL_USERNAME, `📢 ${msg}`, {
+      parse_mode: "HTML",
+    });
+  } catch {
+    console.log("⚠️ Could not post to channel.");
+  }
+});
+
+bot.command("stats", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  const totalDraws = await db.count(Draw, {});
+  const totalParticipants = await db.count(Participant, {});
+  ctx.reply(`📊 Draws: ${totalDraws}\n👥 Participants: ${totalParticipants}`, { parse_mode: "HTML" });
+});
+
+// View participants for active draw
+bot.command("participants", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  
+  const active = await db.findOne(Draw, { active: true });
+  if (!active) return ctx.reply("❌ No active draw found.");
+
+  const participants = await db.find(Participant, { drawId: active.id }, []);
+  
+  if (participants.length === 0) {
+    return ctx.reply(`❌ No participants have joined <b>${active.title}</b> yet.`, { parse_mode: "HTML" });
+  }
+
+  let message = `👥 <b>Participants for "${active.title}"</b>\n\n`;
+  message += `📊 Total Participants: <b>${participants.length}</b>\n\n`;
+
+  // Show first 50 participants to avoid message length limits
+  const displayCount = Math.min(participants.length, 50);
+  
+  for (let i = 0; i < displayCount; i++) {
+    const participant = participants[i];
+    try {
+      const chat = await ctx.api.getChat(participant.userId);
+      if (chat.username) {
+        message += `${i + 1}. @${chat.username}\n`;
+      } else if (chat.first_name) {
+        message += `${i + 1}. ${chat.first_name} (ID: ${participant.userId})\n`;
+      } else {
+        message += `${i + 1}. User ${participant.userId}\n`;
+      }
+    } catch (error) {
+      message += `${i + 1}. User ${participant.userId} (cannot fetch info)\n`;
+    }
+  }
+
+  if (participants.length > 50) {
+    message += `\n... and ${participants.length - 50} more participants.\n`;
+    message += `Use /export to get the complete list.`;
+  }
+
+  await ctx.reply(message, { parse_mode: "HTML" });
+});
+
+// Export participants as text file
+bot.command("export", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  
+  const active = await db.findOne(Draw, { active: true });
+  if (!active) return ctx.reply("❌ No active draw found.");
+
+  const participants = await db.find(Participant, { drawId: active.id }, []);
+  
+  if (participants.length === 0) {
+    return ctx.reply(`❌ No participants have joined <b>${active.title}</b> yet.`, { parse_mode: "HTML" });
+  }
+
+  let fileContent = `Participants for "${active.title}"\n`;
+  fileContent += `Generated: ${new Date().toLocaleString()}\n`;
+  fileContent += `Total Participants: ${participants.length}\n\n`;
+
+  for (let i = 0; i < participants.length; i++) {
+    const participant = participants[i];
+    try {
+      const chat = await ctx.api.getChat(participant.userId);
+      if (chat.username) {
+        fileContent += `${i + 1}. @${chat.username} (ID: ${participant.userId})\n`;
+      } else if (chat.first_name) {
+        fileContent += `${i + 1}. ${chat.first_name} (ID: ${participant.userId})\n`;
+      } else {
+        fileContent += `${i + 1}. User ${participant.userId}\n`;
+      }
+    } catch (error) {
+      fileContent += `${i + 1}. User ${participant.userId} (cannot fetch info)\n`;
+    }
+  }
+
+  // Create a text file and send it
+  const fileName = `participants_${active.id}.txt`;
+  const fileBuffer = Buffer.from(fileContent, 'utf-8');
+  
+  await ctx.replyWithDocument(
+    new InputFile(fileBuffer, fileName),
+    {
+      caption: `📊 Participants list for "${active.title}"\nTotal: ${participants.length} participants`,
+      parse_mode: "HTML"
+    }
+  );
+});
+
+// Quick participant count
+bot.command("count", async (ctx) => {
+  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
+  
+  const active = await db.findOne(Draw, { active: true });
+  if (!active) return ctx.reply("❌ No active draw found.");
+
+  const count = await db.count(Participant, { drawId: active.id });
+  
+  ctx.reply(`📊 <b>${active.title}</b>\n👥 Participants: <b>${count}</b>`, { parse_mode: "HTML" });
+});
+
   bot.command("stats", async (ctx) => {
     if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
     const totalDraws = await db.count(Draw, {});
@@ -495,7 +703,7 @@ async function initBot() {
   });
 
   // ===== AI CHAT =====
-  // ===== AI CHAT =====
+ 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 bot.on("message:text", async (ctx) => {
