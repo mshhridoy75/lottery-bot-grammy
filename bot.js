@@ -601,7 +601,7 @@ async function startBot() {
 
   } catch (err) {
     console.error("❌ Failed to start bot:", err);
-    setTimeout(startBot, 3000);
+    setTimeout(startBot, 2000);
   }
 }
 
@@ -618,11 +618,11 @@ process.once("SIGTERM", async () => {
 // auto restart on crash
 process.on("uncaughtException", (err) => {
   console.error("❌ Uncaught Exception:", err);
-  setTimeout(startBot, 3000);
+  setTimeout(startBot, 2000);
 });
 process.on("unhandledRejection", (reason) => {
   console.error("❌ Unhandled Rejection:", reason);
-  setTimeout(startBot, 3000);
+  setTimeout(startBot, 2000);
 });
 
 // Start the bot for the first time
