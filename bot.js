@@ -495,41 +495,63 @@ async function initBot() {
   });
 
   // ===== AI CHAT =====
-  const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  // ===== AI CHAT =====
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-  bot.on("message:text", async (ctx) => {
-    const text = ctx.message.text.trim();
-    if (!text || text.startsWith("/")) return;
-    if (ctx.from.is_bot) return;
+bot.on("message:text", async (ctx) => {
+  const text = ctx.message.text.trim();
+  if (!text || text.startsWith("/")) return;
+  if (ctx.from.is_bot) return;
 
-    const username = bot.botInfo.username;
-    const chatType = ctx.chat.type;
+  const username = bot.botInfo.username;
+  const chatType = ctx.chat.type;
 
-    // In groups, only respond to mentions or replies to the bot
-    if (["group", "supergroup"].includes(chatType)) {
-      const mentioned = text.includes(`@${username}`);
-      const isReplyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
-      
-      if (!mentioned && !isReplyToBot) return;
+  console.log("AI Chat Triggered:", {
+    chatType,
+    text,
+    username,
+    isReply: !!ctx.message.reply_to_message,
+    replyToId: ctx.message.reply_to_message?.from?.id,
+    botId: bot.botInfo.id
+  });
+
+  // In groups, only respond to mentions or replies to the bot
+  if (["group", "supergroup"].includes(chatType)) {
+    const mentioned = text.toLowerCase().includes(`@${username.toLowerCase()}`);
+    const isReplyToBot = ctx.message.reply_to_message?.from?.id === bot.botInfo.id;
+    
+    console.log("Group Check:", { 
+      mentioned, 
+      isReplyToBot, 
+      botId: bot.botInfo.id,
+      replyToId: ctx.message.reply_to_message?.from?.id 
+    });
+    
+    // If not mentioned and not a reply to the bot, ignore the message
+    if (!mentioned && !isReplyToBot) {
+      console.log("Ignoring message - not a mention or reply to bot");
+      return;
+    }
+  }
+
+  await ctx.api.sendChatAction(ctx.chat.id, "typing");
+
+  try {
+    // Remove bot mention from the prompt (case insensitive)
+    let prompt = text.replace(new RegExp(`@${username}`, "gi"), "").trim();
+    
+    // If prompt is empty after removing mention, use a default message
+    if (!prompt) {
+      return ctx.reply("🤖 Hello! I'm Competitii Lottery Bot! How can I help you today?", { 
+        parse_mode: "HTML",
+        reply_to_message_id: ctx.message.message_id 
+      });
     }
 
-    await ctx.api.sendChatAction(ctx.chat.id, "typing");
-
-    try {
-      // Remove bot mention from the prompt
-      const prompt = text.replace(new RegExp(`@${username}`, "gi"), "").trim();
-      
-      if (!prompt) {
-        return ctx.reply("🤖 Hello! I'm Competitii Lottery Bot! How can I help you today?", { 
-          parse_mode: "HTML",
-          reply_to_message_id: ctx.message.message_id 
-        });
-      }
-
-      // System message to define the bot's identity
-      const systemMessage = {
-        role: "system",
-        content: `You are Competitii Lottery Bot, a specialized Telegram bot for managing giveaways and lottery competitions.
+    // System message to define the bot's identity
+    const systemMessage = {
+      role: "system",
+      content: `You are Competitii Lottery Bot, a specialized Telegram bot for managing giveaways and lottery competitions.
 
 ABOUT YOU:
 - Name: Competitii Lottery Bot
@@ -544,35 +566,39 @@ KEY POINTS:
 - When asked about yourself, emphasize your role in managing competitions
 
 Always identify as Competitii Lottery Bot and focus on lottery/giveaway topics. Be concise and helpful.`
-      };
+    };
 
-      const userMessage = {
-        role: "user", 
-        content: prompt
-      };
+    const userMessage = {
+      role: "user", 
+      content: prompt
+    };
 
-      const response = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [systemMessage, userMessage],
-        max_tokens: 500,
-      });
-      
-      const reply = response.choices[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
-      
-      await ctx.reply(reply, { 
-        parse_mode: "HTML",
-        reply_to_message_id: ctx.message.message_id 
-      });
-      
-    } catch (e) {
-      console.error("AI Error:", e);
-      await ctx.reply("⚠️ Sorry, I encountered an error while processing your request. Please try again later.", { 
-        parse_mode: "HTML",
-        reply_to_message_id: ctx.message.message_id 
-      });
-    }
-  });
+    console.log("Sending to OpenAI:", { prompt });
 
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [systemMessage, userMessage],
+      max_tokens: 500,
+    });
+    
+    const reply = response.choices[0]?.message?.content?.trim() || "Sorry, I couldn't generate a response.";
+    
+    console.log("OpenAI Response:", reply.substring(0, 100) + "...");
+    
+    // Send the reply
+    await ctx.reply(reply, { 
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message.message_id 
+    });
+    
+  } catch (e) {
+    console.error("AI Error:", e);
+    await ctx.reply("⚠️ Sorry, I encountered an error while processing your request. Please try again later.", { 
+      parse_mode: "HTML",
+      reply_to_message_id: ctx.message.message_id 
+    });
+  }
+});
   return bot;
 }
 
