@@ -459,48 +459,6 @@ async function initBot() {
     }
   });
 
-  // View participants for active draw
-bot.command("participants", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-  
-  const active = await db.findOne(Draw, { active: true });
-  if (!active) return ctx.reply("❌ No active draw found.");
-
-  const participants = await db.find(Participant, { drawId: active.id }, []);
-  
-  if (participants.length === 0) {
-    return ctx.reply(`❌ No participants have joined <b>${active.title}</b> yet.`, { parse_mode: "HTML" });
-  }
-
-  let message = `👥 <b>Participants for "${active.title}"</b>\n\n`;
-  message += `📊 Total Participants: <b>${participants.length}</b>\n\n`;
-
-  // Show first 50 participants to avoid message length limits
-  const displayCount = Math.min(participants.length, 50);
-  
-  for (let i = 0; i < displayCount; i++) {
-    const participant = participants[i];
-    try {
-      const chat = await ctx.api.getChat(participant.userId);
-      if (chat.username) {
-        message += `${i + 1}. @${chat.username}\n`;
-      } else if (chat.first_name) {
-        message += `${i + 1}. ${chat.first_name} (ID: ${participant.userId})\n`;
-      } else {
-        message += `${i + 1}. User ${participant.userId}\n`;
-      }
-    } catch (error) {
-      message += `${i + 1}. User ${participant.userId} (cannot fetch info)\n`;
-    }
-  }
-
-  if (participants.length > 50) {
-    message += `\n... and ${participants.length - 50} more participants.\n`;
-    message += `Use /export to get the complete list.`;
-  }
-
-  await ctx.reply(message, { parse_mode: "HTML" });
-});
 
 // ================= ADMIN COMMANDS =================
 bot.command("newdraw", async (ctx) => {
@@ -607,52 +565,6 @@ bot.command("participants", async (ctx) => {
   }
 
   await ctx.reply(message, { parse_mode: "HTML" });
-});
-
-// Export participants as text file
-bot.command("export", async (ctx) => {
-  if (ctx.from.id !== ADMIN_ID) return ctx.reply(LANG.en.admin_only, { parse_mode: "HTML" });
-  
-  const active = await db.findOne(Draw, { active: true });
-  if (!active) return ctx.reply("❌ No active draw found.");
-
-  const participants = await db.find(Participant, { drawId: active.id }, []);
-  
-  if (participants.length === 0) {
-    return ctx.reply(`❌ No participants have joined <b>${active.title}</b> yet.`, { parse_mode: "HTML" });
-  }
-
-  let fileContent = `Participants for "${active.title}"\n`;
-  fileContent += `Generated: ${new Date().toLocaleString()}\n`;
-  fileContent += `Total Participants: ${participants.length}\n\n`;
-
-  for (let i = 0; i < participants.length; i++) {
-    const participant = participants[i];
-    try {
-      const chat = await ctx.api.getChat(participant.userId);
-      if (chat.username) {
-        fileContent += `${i + 1}. @${chat.username} (ID: ${participant.userId})\n`;
-      } else if (chat.first_name) {
-        fileContent += `${i + 1}. ${chat.first_name} (ID: ${participant.userId})\n`;
-      } else {
-        fileContent += `${i + 1}. User ${participant.userId}\n`;
-      }
-    } catch (error) {
-      fileContent += `${i + 1}. User ${participant.userId} (cannot fetch info)\n`;
-    }
-  }
-
-  // Create a text file and send it
-  const fileName = `participants_${active.id}.txt`;
-  const fileBuffer = Buffer.from(fileContent, 'utf-8');
-  
-  await ctx.replyWithDocument(
-    new InputFile(fileBuffer, fileName),
-    {
-      caption: `📊 Participants list for "${active.title}"\nTotal: ${participants.length} participants`,
-      parse_mode: "HTML"
-    }
-  );
 });
 
 // Quick participant count
